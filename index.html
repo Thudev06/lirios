@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lirio del valle</title>
-<meta name="description" content="Lirio del valle 3D renderizado en caracteres ASCII: crece, florece, gira y el viento se lleva sus pétalos.">
+<meta name="description" content="Lirio del valle 3D renderizado en caracteres ASCII, con dos ratas comiendo queso a sus pies: crece, florece, gira y el viento se lleva sus pétalos.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23040408'/%3E%3Cpath d='M8 1.5v2.5' stroke='%236eaa46' stroke-width='1.2'/%3E%3Cpath d='M4 10c0-3.6 1.6-6 4-6s4 2.4 4 6l1.5 2.5-2-.8-1 1.3-1-1.3-1.5 1.3-1.5-1.3-1 1.3-1-1.3-2 .8z' fill='%23f5f5eb'/%3E%3C/svg%3E">
 <style>
   :root { --bg: #040408; --fg: #6d7a68; }
@@ -24,28 +24,53 @@
 "use strict";
 // ---------------------------------------------------------------- constantes
 const CYCLE = 18.0;
+const ROT_SPEED = 2 * Math.PI / CYCLE, ROT_0 = -0.6;     // una vuelta exacta por ciclo: cada ciclo se ve igual
 const RAMP = " .,:;-=+*cox%#&@";
 const LEVELS = RAMP.length;
-const MAT_BELL = 0, MAT_STEM = 1, MAT_LEAF = 2, MAT_BUD = 3, MAT_INNER = 4;
-const MAT_COLORS = [[245,245,235],[110,170,70],[45,125,55],[215,235,195],[120,125,110]];
-const AMBIENT = [0.45, 0.25, 0.22, 0.35, 0.15];
+const MAT_BELL = 0, MAT_STEM = 1, MAT_LEAF = 2, MAT_BUD = 3, MAT_INNER = 4,
+      MAT_FUR_W = 5, MAT_FUR_G = 6, MAT_PINK = 7, MAT_DARK = 8, MAT_CHEESE = 9, MAT_HOLE = 10,
+      MAT_WHISKER = 11, MAT_BELLY = 12, MAT_WHISKER_D = 13;
+const MAT_COLORS = [
+  [245, 245, 235], [110, 170, 70], [45, 125, 55], [215, 235, 195], [120, 125, 110],  // planta
+  [238, 236, 230], [172, 172, 182], [246, 146, 166], [28, 26, 30],                  // ratas
+  [250, 205, 70], [175, 120, 35],                                                    // queso
+  [215, 215, 222], [218, 218, 225], [105, 105, 115],                                 // bigotes, tripita, bigotes oscuros
+];
+const AMBIENT = [0.45, 0.25, 0.22, 0.35, 0.15, 0.16, 0.20, 0.25, 0.05, 0.30, 0.15, 0.55, 0.24, 0.55];
+// La planta se ilumina por las dos caras (hojas y pétalos finos);
+// las ratas y el queso son volúmenes cerrados: una cara + un poco de luz de relleno.
+const ONE_SIDED = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0];
 
-// PRNG con semilla (mulberry32) para que la planta sea siempre la misma
+// PRNG con semilla (mulberry32) para que la escena sea siempre la misma
 let _s = 7;
 function rand() { _s |= 0; _s = _s + 0x6D2B79F5 | 0; let t = Math.imul(_s ^ _s >>> 15, 1 | _s);
   t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }
 function randn() { let u = 0; while (u === 0) u = rand(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rand()); }
-const smooth = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+const clamp01 = x => Math.min(1, Math.max(0, x));
+const smooth = x => { x = clamp01(x); return x * x * (3 - 2 * x); };
+const easeOutBack = x => { const c1 = 1.70158, c3 = c1 + 1; x = clamp01(x); return 1 + c3 * (x - 1) ** 3 + c1 * (x - 1) ** 2; };
 
-// ---------------------------------------------------------------- geometría
+// ---------------------------------------------------------------- vectores
 const add = (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
 const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
 const mul = (a, s) => [a[0]*s, a[1]*s, a[2]*s];
 const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
 const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; };
+const rotXv = (v, a) => { const c = Math.cos(a), s = Math.sin(a); return [v[0], c*v[1] - s*v[2], s*v[1] + c*v[2]]; };
+const rotYv = (v, a) => { const c = Math.cos(a), s = Math.sin(a); return [c*v[0] + s*v[2], v[1], -s*v[0] + c*v[2]]; };
+const rotZv = (v, a) => { const c = Math.cos(a), s = Math.sin(a); return [c*v[0] - s*v[1], s*v[0] + c*v[1], v[2]]; };
 const bez = (p0, p1, p2, t) => add(add(mul(p0, (1-t)*(1-t)), mul(p1, 2*(1-t)*t)), mul(p2, t*t));
 const bezD = (p0, p1, p2, t) => add(mul(sub(p1, p0), 2*(1-t)), mul(sub(p2, p1), 2*t));
 const lin = (a, b, n) => Array.from({length: n}, (_, i) => a + (b - a) * i / (n - 1));
+
+// matrices 3x3 en filas (para animar las ratas por grupos)
+const m3 = (a, b) => [0, 1, 2].flatMap(i => [0, 1, 2].map(j => a[3*i]*b[j] + a[3*i+1]*b[3+j] + a[3*i+2]*b[6+j]));
+const m3v = (a, v) => [a[0]*v[0] + a[1]*v[1] + a[2]*v[2], a[3]*v[0] + a[4]*v[1] + a[5]*v[2], a[6]*v[0] + a[7]*v[1] + a[8]*v[2]];
+const mRx = a => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, -s, 0, s, c]; };
+const mRy = a => { const c = Math.cos(a), s = Math.sin(a); return [c, 0, s, 0, 1, 0, -s, 0, c]; };
+const mI = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+// ---------------------------------------------------------------- lirio
 const STEM = [[0, -1.9, 0], [0, 1.9, 0], [1.8, 1.2, 0.15]];
 
 function buildPlant() {
@@ -137,11 +162,167 @@ function buildPlant() {
   const pk = arr => { const f = new Float32Array(n * 3); arr.forEach((p, i) => { f[3*i] = p[0]; f[3*i+1] = p[1]; f[3*i+2] = p[2]; }); return f; };
   const Pf = pk(P), Af = pk(A);
   for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) { Pf[3*i+c] += off[c]; Af[3*i+c] += off[c]; }
-  return { n, P: Pf, N: pk(N), A: Af, M: Uint8Array.from(M), G: Float32Array.from(G), D: Uint8Array.from(D) };
+  return { n, off, P: Pf, N: pk(N), A: Af, M: Uint8Array.from(M), G: Float32Array.from(G), D: Uint8Array.from(D) };
+}
+
+// ---------------------------------------------------------------- ratas
+// Cada rata se modela sentada en el origen, mirando hacia +z (altura ~1.4 con orejas), con
+// proporciones de muñequito (cabeza y orejas grandes) para que se reconozcan aun siendo chiquitas.
+// Se anima por grupos: cuerpo (respira), cabeza (mordisquea y mira), brazos + queso, cola.
+const G_BODY = 0, G_HEAD = 1, G_HANDS = 2, G_TAIL = 3;
+const HEAD_PIVOT = [0, 0.66, 0.05];      // cuello
+const ARMS_PIVOT = [0, 0.56, 0.08];      // eje de los hombros
+
+function fibDirs(n) {        // direcciones repartidas de forma uniforme sobre la esfera
+  const out = [], ga = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = 1 - 2 * (i + 0.5) / n, r = Math.sqrt(1 - y * y), th = ga * i;
+    out.push([Math.cos(th) * r, y, Math.sin(th) * r]);
+  }
+  return out;
+}
+function ellArea(r) {        // área aproximada de un elipsoide (fórmula de Thomsen)
+  const p = 1.6075, a = Math.pow(r[0], p), b = Math.pow(r[1], p), c = Math.pow(r[2], p);
+  return 4 * Math.PI * Math.pow((a * b + a * c + b * c) / 3, 1 / p);
+}
+const tailBase = side => [0.05 * side, 0.06, -0.26];
+
+function buildRat(fur, noseMat, bellyMat, whiskerMat, side, scale) {
+  const DENS = 2000 * scale * scale;     // puntos por unidad² local (densidad constante en pantalla)
+  const STEP = 0.0092 / scale;           // separación de muestreo en tubos, líneas y caras planas
+  const P = [], N = [], M = [], G = [], CX = [], CY = [];
+  const put = (p, n, m, g, cx = 0, cy = -1) => { P.push(p); N.push(n); M.push(m); G.push(g); CX.push(cx); CY.push(cy); };
+
+  // volúmenes (elipsoides); los puntos que caen dentro de otro volumen del mismo grupo se descartan
+  const blobs = [
+    { c: [0, 0.27, -0.02],       r: [0.30, 0.27, 0.28],    m: fur,      g: G_BODY },  // ancas y barriga
+    { c: [0, 0.50, 0.03],        r: [0.21, 0.19, 0.19],    m: fur,      g: G_BODY },  // pecho
+    bellyMat !== null &&
+    { c: [0, 0.31, 0.15],        r: [0.20, 0.20, 0.14],    m: bellyMat, g: G_BODY },  // tripita clara
+    { c: [0.14, 0.03, 0.21],     r: [0.07, 0.03, 0.11],    m: MAT_PINK, g: G_BODY },  // patas traseras
+    { c: [-0.14, 0.03, 0.21],    r: [0.07, 0.03, 0.11],    m: MAT_PINK, g: G_BODY },
+    { c: [0, 0.88, 0.07],        r: [0.27, 0.245, 0.24],   m: fur,      g: G_HEAD },  // cabeza (grande)
+    { c: [0.15, 0.80, 0.17],     r: [0.12, 0.10, 0.11],    m: fur,      g: G_HEAD },  // mofletes
+    { c: [-0.15, 0.80, 0.17],    r: [0.12, 0.10, 0.11],    m: fur,      g: G_HEAD },
+    { c: [0, 0.83, 0.29],        r: [0.115, 0.10, 0.17],   m: fur,      g: G_HEAD },  // hocico
+    { c: [0, 0.85, 0.465],       r: [0.055, 0.05, 0.045],  m: noseMat,  g: G_HEAD },  // nariz
+    { c: [0.11, 0.95, 0.27],     r: [0.065, 0.075, 0.045], m: MAT_DARK, g: G_HEAD },  // ojos
+    { c: [-0.11, 0.95, 0.27],    r: [0.065, 0.075, 0.045], m: MAT_DARK, g: G_HEAD },
+  ].filter(Boolean);
+  const inside = (p, self) => blobs.some(b => b !== self && b.g === self.g &&
+    ((p[0] - b.c[0]) / b.r[0]) ** 2 + ((p[1] - b.c[1]) / b.r[1]) ** 2 + ((p[2] - b.c[2]) / b.r[2]) ** 2 < 0.98);
+  for (const b of blobs)
+    for (const u of fibDirs(Math.max(40, Math.round(ellArea(b.r) * DENS)))) {
+      const p = [b.c[0] + u[0] * b.r[0], b.c[1] + u[1] * b.r[1], b.c[2] + u[2] * b.r[2]];
+      if (!inside(p, b)) put(p, norm([u[0] / b.r[0], u[1] / b.r[1], u[2] / b.r[2]]), b.m, b.g);
+    }
+
+  // orejas: discos grandes de frente (borde de pelo, interior rosa), por encima y a los lados de la cabeza
+  for (const sg of [-1, 1]) {
+    const center = [0.27 * sg, 1.16, -0.02];
+    const orient = v => rotYv(rotZv(v, -0.30 * sg), 0.12 * sg);
+    for (const [r, dz, m] of [[[0.25, 0.25, 0.032], 0, fur], [[0.17, 0.17, 0.014], 0.026, MAT_PINK]])
+      for (const u of fibDirs(Math.round(ellArea(r) * DENS))) {
+        const p = [u[0] * r[0], u[1] * r[1], u[2] * r[2] + dz];
+        put(add(center, orient(p)), orient(norm([u[0] / r[0], u[1] / r[1], u[2] / r[2]])), m, G_HEAD);
+      }
+  }
+
+  // bigotes: tres a cada lado del hocico, un poco caídos
+  for (const sg of [-1, 1])
+    for (const k of [-1, 0, 1]) {
+      const st = [0.08 * sg, 0.825 + 0.012 * k, 0.40], dir = norm([sg, 0.18 * k - 0.05, 0.22]);
+      for (let s = 0; s <= 0.26; s += STEP * 0.8)
+        put(add(add(st, mul(dir, s)), [0, -0.15 * s * s, 0]), norm([0, 0.6, 0.8]), whiskerMat, G_HEAD);
+    }
+
+  // tubos (brazos y cola) a lo largo de una curva, con radio r0 -> r1
+  const tube = (curve, r0, r1, m, g) => {
+    let len = 0;
+    for (let i = 1; i <= 20; i++) len += Math.hypot(...sub(curve(i / 20), curve((i - 1) / 20)));
+    const n = Math.max(8, Math.ceil(len / STEP));
+    for (let i = 0; i <= n; i++) {
+      const t = i / n, c = curve(t);
+      const d = norm(sub(curve(Math.min(1, t + 1e-3)), curve(Math.max(0, t - 1e-3))));
+      const ax = Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      const u = norm(cross(d, ax)), v = cross(d, u);
+      const r = r0 + (r1 - r0) * t, k = Math.max(6, Math.ceil(2 * Math.PI * r / STEP));
+      for (let j = 0; j < k; j++) {
+        const a = 2 * Math.PI * j / k, nn = add(mul(u, Math.cos(a)), mul(v, Math.sin(a)));
+        put(add(c, mul(nn, r)), nn, m, g);
+      }
+    }
+  };
+  // brazos que sujetan el queso + manitas
+  for (const sg of [-1, 1]) {
+    const S = [0.18 * sg, 0.56, 0.08], Hn = [0.14 * sg, 0.40, 0.33];
+    tube(t => add(S, mul(sub(Hn, S), t)), 0.055, 0.042, fur, G_HANDS);
+    for (const u of fibDirs(Math.round(4 * Math.PI * 0.052 * 0.052 * DENS) + 20)) put(add(Hn, mul(u, 0.052)), u, MAT_PINK, G_HANDS);
+  }
+  // cola: se curva por el suelo hacia el lado de fuera
+  const T0 = tailBase(side), T1 = [0.55 * side, 0.02, -0.48], T2 = [0.60 * side, 0.025, 0.12];
+  tube(t => bez(T0, T1, T2, t), 0.042, 0.012, MAT_PINK, G_TAIL);
+
+  // cuña de queso: prisma triangular con agujeros, a la altura de la tripa.
+  // CX/CY guardan su posición local para ir "comiéndolo" desde la punta.
+  const TIP = 0.24, HALF = 0.15, TH = 0.065, TILT = -0.15, CPOS = [0, 0.30, 0.36];
+  const cplace = v => add(CPOS, rotXv(v, TILT));
+  const holesF = [[-0.05, 0.055, 0.03], [0.055, 0.075, 0.023], [0.0, 0.15, 0.018], [-0.095, 0.016, 0.014]];
+  const holesS = [[0.30, 0.015, 0.028], [0.68, -0.025, 0.02]];       // (fracción del lado, z, radio)
+  for (let y = 0; y <= TIP + 1e-9; y += STEP) {                       // caras triangulares
+    const w = HALF * (1 - y / TIP);
+    for (let x = -w; x <= w + 1e-9; x += STEP)
+      for (const zs of [-1, 1]) {
+        const hole = holesF.some(([hx, hy, hr]) => (x - zs * hx) ** 2 + (y - hy) ** 2 < hr * hr);
+        put(cplace([x, y, zs * TH]), rotXv([0, 0, zs], TILT), hole ? MAT_HOLE : MAT_CHEESE, G_HANDS, x, y);
+      }
+  }
+  for (let x = -HALF; x <= HALF + 1e-9; x += STEP)                    // base
+    for (let z = -TH; z <= TH + 1e-9; z += STEP)
+      put(cplace([x, 0, z]), rotXv([0, -1, 0], TILT), MAT_CHEESE, G_HANDS, x, 0);
+  const SL = Math.hypot(HALF, TIP);
+  for (const sg of [-1, 1]) {                                         // lados inclinados
+    const nrm = rotXv(norm([sg * TIP, HALF, 0]), TILT);
+    for (let s = 0; s <= SL + 1e-9; s += STEP) {
+      const f = s / SL, x = sg * HALF * (1 - f), y = TIP * f;
+      for (let z = -TH; z <= TH + 1e-9; z += STEP) {
+        const hole = holesS.some(([hf, hz, hr]) => ((f - hf) * SL) ** 2 + (z - sg * hz) ** 2 < hr * hr);
+        put(cplace([x, y, z]), nrm, hole ? MAT_HOLE : MAT_CHEESE, G_HANDS, x, y);
+      }
+    }
+  }
+  return { P, N, M, G, CX, CY };
 }
 
 const plant = buildPlant();
 const NP = plant.n;
+
+// Las dos ratas se sientan juntitas en el hueco entre las dos hojas, mirando hacia fuera.
+// Su orientación está elegida para que queden de frente a la cámara en el segundo 10 del ciclo.
+const RAT_YAW = Math.PI - (ROT_SPEED * 10.0 + ROT_0);
+const RAT_DIR = [Math.sin(RAT_YAW), 0, Math.cos(RAT_YAW)];
+const RAT_LAT = [Math.cos(RAT_YAW), 0, -Math.sin(RAT_YAW)];
+const RAT_SEAT = add(add(mul(RAT_DIR, 0.62), [0, -1.97, 0]), plant.off);
+const RATS = [
+  { fur: MAT_FUR_W, nose: MAT_PINK, belly: null,      whisker: MAT_WHISKER_D, side: -1, d: -0.25, yaw:  0.30, scale: 0.60, phase: 0.0, bite: 0.13 },  // blanca
+  { fur: MAT_FUR_G, nose: MAT_DARK, belly: MAT_BELLY, whisker: MAT_WHISKER,   side:  1, d:  0.25, yaw: -0.30, scale: 0.56, phase: 2.1, bite: 0.11 },  // gris
+];
+RATS.forEach(R => { R.pos = add(RAT_SEAT, mul(RAT_LAT, R.d)); });
+
+const ratParts = RATS.map(R => buildRat(R.fur, R.nose, R.belly, R.whisker, R.side, R.scale));
+const NR = ratParts.reduce((s, r) => s + r.P.length, 0);
+const rP = new Float32Array(NR * 3), rN = new Float32Array(NR * 3), rM = new Uint8Array(NR),
+      rG = new Uint8Array(NR), rCX = new Float32Array(NR), rCY = new Float32Array(NR);
+{
+  let k = 0;
+  ratParts.forEach((r, ri) => {
+    for (let i = 0; i < r.P.length; i++, k++) {
+      rP.set(r.P[i], 3 * k); rN.set(r.N[i], 3 * k);
+      rM[k] = r.M[i]; rG[k] = ri * 4 + r.G[i]; rCX[k] = r.CX[i]; rCY[k] = r.CY[i];
+    }
+  });
+}
+
 // viento: velocidad, retardo, fase de turbulencia y qué puntos viajan como partícula
 const vel = new Float32Array(NP * 3), delay = new Float32Array(NP), seed = new Float32Array(NP * 3), keep = new Uint8Array(NP);
 for (let i = 0; i < NP; i++) {
@@ -163,7 +344,7 @@ function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   W = Math.floor(innerWidth * dpr); H = Math.floor(innerHeight * dpr);
   canvas.width = W; canvas.height = H;
-  // tamaño de celda proporcional a la pantalla (como el original a 1280x900 con fuente de 8px)
+  // tamaño de celda proporcional a la pantalla (referencia: 1280x900 con fuente de 8px)
   const scale = Math.min(W / 1000, H / 900);
   ch = Math.max(4 * dpr, Math.round(9 * Math.min(W / 1280, H / 900)));
   const fontPx = Math.round(ch * 0.95);
@@ -190,68 +371,130 @@ addEventListener("resize", resize);
 resize();
 
 const L = norm([-0.5, 0.7, -0.6]);
+const POW08 = Float32Array.from({length: 257}, (_, i) => Math.pow(i / 256, 0.8));   // lam^0.8 precalculado
 const CAM = 6.0;
+let gcy = 1, gsy = 0, gcx = 1, gsx = 0;      // rotación global del fotograma
+
+// Gira, proyecta, ilumina y escribe un punto en la rejilla (z-buffer por celda).
+// (wx, wy, wz) es un desplazamiento ya en coordenadas de pantalla (el viento).
+function plot(px, py, pz, nx, ny, nz, m, alpha, wx, wy, wz) {
+  const z1 = -gsy * px + gcy * pz;
+  const x = gcy * px + gsy * pz + wx;
+  const y = gcx * py - gsx * z1 + wy;
+  const zz = gsx * py + gcx * z1 + wz + CAM;
+  if (zz < 0.5) return;
+  const scx = Math.floor((W / 2 + focal * x / zz) / cw), scy = Math.floor((H / 2 - focal * y / zz) / ch);
+  if (scx < 0 || scx >= cols || scy < 0 || scy >= rows) return;
+  const idx = scy * cols + scx;
+  if (zz >= zbuf[idx]) return;
+  const rz1 = -gsy * nx + gcy * nz;
+  const rnx = gcy * nx + gsy * nz, rny = gcx * ny - gsx * rz1, rnz = gsx * ny + gcx * rz1;
+  const d = rnx * L[0] + rny * L[1] + rnz * L[2];
+  const lam = ONE_SIDED[m] ? Math.max(0, d) + 0.22 * Math.max(0, -d) : Math.abs(d);
+  const amb = AMBIENT[m];
+  const depth = Math.min(1.1, Math.max(0.65, 1.0 - (zz - CAM) * 0.10));
+  const b = (amb + (1 - amb) * POW08[Math.min(256, (lam * 256) | 0)]) * alpha * depth;
+  zbuf[idx] = zz;
+  cellLv[idx] = Math.min(LEVELS - 1, Math.max(0, (b * (LEVELS - 1)) | 0));
+  cellMat[idx] = m;
+}
+
+// Matrices por rata y grupo: mundo = A·p_local + b; normales: R·n_local
+const ratA = new Float32Array(8 * 9), ratB = new Float32Array(8 * 3), ratR = new Float32Array(8 * 9);
+const ratCut = [0, 0];
+let ratK = 0, ratAlpha = 1;
+
+function updateRats(t, ct) {
+  ratK = easeOutBack((ct - 2.2) / 0.9) * (1 - smooth((ct - 13.6) / 2.4));   // aparecen con un saltito; al final se encogen
+  ratAlpha = 1 - smooth((ct - 15.0) / 1.0);
+  const eat = smooth((ct - 3.6) / 9.0);                                      // el queso se va acabando
+  RATS.forEach((R, r) => {
+    ratCut[r] = 0.245 - R.bite * eat;
+    const ph = R.phase;
+    const burst = smooth((Math.sin(2 * Math.PI * 0.21 * t + ph) + 0.2) * 2.5);   // ráfagas de mordisquitos
+    const nib = 0.5 + 0.5 * Math.sin(2 * Math.PI * 2.8 * t + ph * 3);
+    const pitch = 0.04 + 0.26 * burst + 0.08 * nib * burst;                     // baja la cabeza al queso
+    const look = (1 - burst) * 0.30 * Math.sin(2 * Math.PI * 0.17 * t + ph);    // entre ráfagas, mira alrededor
+    const raise = 0.30 * burst + 0.06 * nib * burst + 0.10 * eat;               // sube el queso a la boca
+    const sway = 0.25 * Math.sin(2 * Math.PI * 0.45 * t + ph);
+    const breath = 1 + 0.015 * Math.sin(2 * Math.PI * 0.6 * t + ph);
+    const Ry = mRy(RAT_YAW + R.yaw), k = R.scale * ratK;
+    const groups = [
+      [[1, 0, 0, 0, breath, 0, 0, 0, 1], mI, [0, 0, 0], [0, 0, 0]],        // cuerpo
+      [m3(mRy(look), mRx(pitch)), null, HEAD_PIVOT, [0, 0, 0]],            // cabeza
+      [mRx(-raise), null, ARMS_PIVOT, [0, 0, 0]],                           // brazos + queso (giran en los hombros)
+      [mRy(sway), null, tailBase(R.side), [0, 0, 0]],                       // cola
+    ];
+    groups.forEach(([Lm, Nm, pv, tr], g) => {
+      const i = r * 4 + g;
+      const A = m3(Ry, Lm).map(v => v * k);
+      const off = add(sub(pv, m3v(Lm, pv)), tr);
+      const b = add(R.pos, mul(m3v(Ry, off), k));
+      ratA.set(A, 9 * i); ratB.set(b, 3 * i); ratR.set(m3(Ry, Nm || Lm), 9 * i);
+    });
+  });
+}
 
 function render(t, ct) {
   zbuf.fill(1e9); cellLv.fill(-1);
   const P = plant.P, Nn = plant.N, A = plant.A, M = plant.M, G = plant.G, D = plant.D;
-  const dot = ct < 1.0 || ct > 16.8;
-  // rotación: Rx(0.18) * Ry(ang)
-  const ay = 0.35 * t - 0.6, cy = Math.cos(ay), sy = Math.sin(ay), cx = Math.cos(0.18), sx = Math.sin(0.18);
-  const grow = (ct - 1.0) / 7.0;
-  const wither = smooth((ct - 13.6) / 2.6);
-  const sway = 0.06 * Math.sin(t * 1.3);
-  const n = dot ? 1 : NP;
-  for (let i = 0; i < n; i++) {
-    let px, py, pz, nx, ny, nz, alpha = 1, m, wx = 0, wy = 0, wz = 0;
-    if (dot) { px = py = pz = 0; nx = 0; ny = 0; nz = -1; m = MAT_BELL; }
-    else {
+  const ay = ROT_SPEED * t + ROT_0;
+  gcy = Math.cos(ay); gsy = Math.sin(ay); gcx = Math.cos(0.18); gsx = Math.sin(0.18);
+
+  if (ct < 1.0 || ct > 16.8) {                // el "punto" inicial y final
+    plot(0, 0, 0, 0, 0, -1, MAT_BELL, 1, 0, 0, 0);
+  } else {
+    // --- lirio
+    const grow = (ct - 1.0) / 7.0;
+    const wither = smooth((ct - 13.6) / 2.6);
+    const sway = 0.06 * Math.sin(t * 1.3);
+    for (let i = 0; i < NP; i++) {
       const g = smooth((grow - G[i]) / 0.12);
       if (g <= 0.01) continue;
-      const k = Math.pow(g, 0.7), i3 = 3 * i;
+      const k = g >= 1 ? 1 : Math.pow(g, 0.7), i3 = 3 * i;
       const ax = A[i3], ay_ = A[i3+1], az = A[i3+2];
-      px = ax + (P[i3] - ax) * k; py = ay_ + (P[i3+1] - ay_) * k; pz = az + (P[i3+2] - az) * k;
-      nx = Nn[i3]; ny = Nn[i3+1]; nz = Nn[i3+2]; m = M[i];
-      const petal = D[i] === 2;
-      if (petal) {
+      let px = ax + (P[i3] - ax) * k, py = ay_ + (P[i3+1] - ay_) * k, pz = az + (P[i3+2] - az) * k;
+      let alpha = 1, wx = 0, wy = 0, wz = 0;
+      if (D[i] === 2) {                       // pétalos: se los lleva el viento
         const wt = ct - 12.5 - delay[i];
         if (wt > 0) {
           if (!keep[i]) continue;
-          alpha *= Math.max(0, 1 - wt / 2.6);
+          alpha = Math.max(0, 1 - wt / 2.6);
           const q = Math.min(wt, 1) * 0.12;
           wx = vel[i3] * wt + 0.55 * wt * wt + q * Math.sin(seed[i3] + wt * 4);
           wy = vel[i3+1] * wt + 0.1375 * wt * wt + q * Math.sin(seed[i3+1] + wt * 4);
           wz = vel[i3+2] * wt + q * Math.sin(seed[i3+2] + wt * 4);
         }
-      } else if (wither > 0) {
+      } else if (wither > 0) {                // hojas y tallo: se marchitan
         px += (ax - px) * wither * 0.85; py += (ay_ - py) * wither * 0.85; pz += (az - pz) * wither * 0.85;
         py -= wither * 0.4;
-        alpha *= 1 - wither;
+        alpha = 1 - wither;
       }
+      if (alpha <= 0) continue;
       const hgt = Math.max(0, py + 1.6);
       px += sway * hgt * hgt * 0.25;
+      plot(px, py, pz, Nn[i3], Nn[i3+1], Nn[i3+2], M[i], alpha, wx, wy, wz);
     }
-    if (alpha <= 0) continue;
-    // rotar punto y normal
-    let x = cy * px + sy * pz, z1 = -sy * px + cy * pz;
-    let y = cx * py - sx * z1, z = sx * py + cx * z1;
-    let rnx = cy * nx + sy * nz, rz1 = -sy * nx + cy * nz;
-    let rny = cx * ny - sx * rz1, rnz = sx * ny + cx * rz1;
-    x += wx; y += wy; z += wz;
-    const zz = z + CAM;
-    if (zz < 0.5) continue;
-    const scx = Math.floor((W / 2 + focal * x / zz) / cw), scy = Math.floor((H / 2 - focal * y / zz) / ch);
-    if (scx < 0 || scx >= cols || scy < 0 || scy >= rows) continue;
-    const idx = scy * cols + scx;
-    if (zz >= zbuf[idx]) continue;
-    const lam = Math.abs(rnx * L[0] + rny * L[1] + rnz * L[2]);
-    const amb = AMBIENT[m];
-    const depth = Math.min(1.1, Math.max(0.65, 1.0 - (zz - CAM) * 0.10));
-    const b = (amb + (1 - amb) * Math.pow(lam, 0.8)) * alpha * depth;
-    zbuf[idx] = zz;
-    cellLv[idx] = Math.min(LEVELS - 1, Math.max(0, (b * (LEVELS - 1)) | 0));
-    cellMat[idx] = m;
+
+    // --- ratas
+    updateRats(t, ct);
+    if (ratK > 0.01 && ratAlpha > 0) {
+      for (let i = 0; i < NR; i++) {
+        const gi = rG[i];
+        if (rCY[i] > ratCut[gi >> 2] + 0.012 * Math.sin(rCX[i] * 60 + (gi >> 2) * 2.3)) continue;  // mordiscos
+        const i3 = 3 * i, o = 9 * gi, ob = 3 * gi;
+        const lx = rP[i3], ly = rP[i3+1], lz = rP[i3+2], nx = rN[i3], ny = rN[i3+1], nz = rN[i3+2];
+        plot(ratA[o] * lx + ratA[o+1] * ly + ratA[o+2] * lz + ratB[ob],
+             ratA[o+3] * lx + ratA[o+4] * ly + ratA[o+5] * lz + ratB[ob+1],
+             ratA[o+6] * lx + ratA[o+7] * ly + ratA[o+8] * lz + ratB[ob+2],
+             ratR[o] * nx + ratR[o+1] * ny + ratR[o+2] * nz,
+             ratR[o+3] * nx + ratR[o+4] * ny + ratR[o+5] * nz,
+             ratR[o+6] * nx + ratR[o+7] * ny + ratR[o+8] * nz,
+             rM[i], ratAlpha, 0, 0, 0);
+      }
+    }
   }
+
   ctx.fillStyle = "#040408";
   ctx.fillRect(0, 0, W, H);
   for (let i = 0; i < cellLv.length; i++) {
