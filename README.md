@@ -8,9 +8,13 @@ Luego se marchita y el ciclo vuelve a empezar (18 s).
 
 `index.html` es una página autónoma: no tiene dependencias ni necesita servidor.
 
-- **En GitHub Pages:** ve a *Settings → Pages → Build and deployment*, elige
-  *Deploy from a branch*, selecciona la rama y la carpeta `/ (root)`, y guarda.
-  Al cabo de uno o dos minutos estará en `https://<usuario>.github.io/<repo>/`.
+- **En GitHub Pages:** **https://thudev06.github.io/lirios/**
+  Para que funcione, el propietario del repositorio tiene que hacer dos cosas una sola vez:
+  1. *Settings → General → Danger Zone → Change visibility → Public*. Con cuenta gratuita,
+     GitHub Pages solo publica repositorios públicos.
+  2. *Settings → Pages → Build and deployment*: en *Source* elige *Deploy from a branch*,
+     selecciona la rama `main` y la carpeta `/ (root)`, y pulsa *Save*.
+     Al cabo de 1 o 2 minutos la página estará en línea.
 - **Sin internet / desde un pendrive:** copia `index.html` y ábrelo con doble clic en el navegador.
 
 Controles: clic o espacio para pausar, `R` para reiniciar, `F` para pantalla completa.
