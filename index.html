@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lirio del valle</title>
+<meta name="description" content="Lirio del valle 3D renderizado en caracteres ASCII: crece, florece, gira y el viento se lleva sus pétalos.">
+<style>
+  :root { --bg: #040408; --fg: #6d7a68; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: pointer; }
+  #hint {
+    position: fixed; left: 16px; bottom: 12px; font: 12px ui-monospace, Menlo, Consolas, monospace;
+    color: var(--fg); opacity: .7; transition: opacity 1.5s; user-select: none; pointer-events: none;
+  }
+  #hint.off { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">clic / espacio: pausa · R: reiniciar · F: pantalla completa</div>
+<script>
+"use strict";
+// ---------------------------------------------------------------- constantes
+const CYCLE = 18.0;
+const RAMP = " .,:;-=+*cox%#&@";
+const LEVELS = RAMP.length;
+const MAT_BELL = 0, MAT_STEM = 1, MAT_LEAF = 2, MAT_BUD = 3, MAT_INNER = 4;
+const MAT_COLORS = [[245,245,235],[110,170,70],[45,125,55],[215,235,195],[120,125,110]];
+const AMBIENT = [0.45, 0.25, 0.22, 0.35, 0.15];
+
+// PRNG con semilla (mulberry32) para que la planta sea siempre la misma
+let _s = 7;
+function rand() { _s |= 0; _s = _s + 0x6D2B79F5 | 0; let t = Math.imul(_s ^ _s >>> 15, 1 | _s);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }
+function randn() { let u = 0; while (u === 0) u = rand(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rand()); }
+const smooth = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+
+// ---------------------------------------------------------------- geometría
+const add = (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
+const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+const mul = (a, s) => [a[0]*s, a[1]*s, a[2]*s];
+const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; };
+const bez = (p0, p1, p2, t) => add(add(mul(p0, (1-t)*(1-t)), mul(p1, 2*(1-t)*t)), mul(p2, t*t));
+const bezD = (p0, p1, p2, t) => add(mul(sub(p1, p0), 2*(1-t)), mul(sub(p2, p1), 2*t));
+const lin = (a, b, n) => Array.from({length: n}, (_, i) => a + (b - a) * i / (n - 1));
+const STEM = [[0, -1.9, 0], [0, 1.9, 0], [1.8, 1.2, 0.15]];
+
+function buildPlant() {
+  const P = [], N = [], M = [], G = [], D = [], A = [];
+  const push = (p, n, m, g, d, a) => { P.push(p); N.push(n); M.push(m); G.push(g); D.push(d); A.push(a); };
+  const ang = Array.from({length: 10}, (_, i) => 2 * Math.PI * i / 10);
+
+  // tallo
+  for (const t of lin(0, 1, 260)) {
+    const c = bez(...STEM, t), d = norm(bezD(...STEM, t));
+    const ax = Math.abs(d[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    const u = norm(cross(d, ax)), v = cross(d, u);
+    const r = 0.035 * (1 - 0.5 * t);
+    for (const a of ang) {
+      const n = add(mul(u, Math.cos(a)), mul(v, Math.sin(a)));
+      const p = add(c, mul(n, r));
+      push(p, n, MAT_STEM, 0.08 + 0.35 * t, 1, p);
+    }
+  }
+
+  // flores: campanas colgantes, alternando lados
+  const nFl = 7;
+  for (let k = 0; k < nFl; k++) {
+    const t = 0.34 + 0.64 * k / (nFl - 1);
+    const base = bez(...STEM, t);
+    const size = 0.24 * (1 - 0.5 * k / (nFl - 1));
+    const side = [0.04, 0, 0.30 * (k % 2 ? 1 : -1) * (1 - 0.4 * k / nFl)];
+    const tip = add(add(base, side), [0.03, -0.12 - 0.6 * size, 0]);
+    const mid = add(add(base, mul(side, 0.9)), [0, 0.05, 0]);
+    for (const s of lin(0, 1, 26)) {
+      const p = bez(base, mid, tip, s);
+      for (let i = 0; i < 10; i += 2) {
+        const n = [Math.cos(ang[i]), 0, Math.sin(ang[i])];
+        push(add(p, mul(n, 0.012)), n, MAT_STEM, 0.35 + 0.05 * k, 1, base);
+      }
+    }
+    const appear = 0.40 + 0.055 * k;
+    if (k >= nFl - 2) {                       // botones cerrados
+      for (let i = 0; i < 420; i++) {
+        const n = norm([randn(), randn(), randn()]);
+        const p = add(add(tip, [0, -size * 0.6, 0]), [n[0]*size*0.55, n[1]*size*0.7, n[2]*size*0.55]);
+        push(p, n, MAT_BUD, appear, 2, tip);
+      }
+      continue;
+    }
+    // campana: exterior blanco + interior en sombra; 6 lóbulos curvados en el borde
+    const Hb = size * 1.1;
+    const th = Array.from({length: 96}, (_, i) => 2 * Math.PI * i / 96);
+    for (const [layer, matL, shrink] of [[0, MAT_BELL, 1.0], [1, MAT_INNER, 0.9]]) {
+      for (const h of lin(0, 1, 40)) {
+        if (layer === 1 && h < 0.25) continue;
+        const r = size * (0.30 + 0.70 * Math.pow(Math.sin(Math.min(h / 0.8, 1) * Math.PI / 2), 0.6)) * shrink;
+        for (const a of th) {
+          const lobe = Math.pow(Math.max(0, Math.cos(3 * a)), 2);
+          const flare = Math.max(0, h - 0.72) / 0.28;
+          const rr = r * (1 + 0.55 * Math.pow(flare, 1.6) * (0.25 + 0.75 * lobe));
+          const hh = h * (1 - 0.10 * (1 - lobe) * flare);
+          const y = -Hb * hh + 0.45 * size * flare * flare * lobe;
+          const n = norm([Math.cos(a), 0.45 - 1.1 * flare * lobe, Math.sin(a)]);
+          push(add(tip, [rr * Math.cos(a), y, rr * Math.sin(a)]), n, matL, appear, 2, tip);
+        }
+      }
+    }
+    for (const s of lin(0, 1, 12))
+      push(add(tip, [0, -Hb * (0.5 + 0.55 * s), 0]), [0, -1, 0], MAT_BUD, appear, 2, tip);
+  }
+
+  // hojas lanceoladas con nervaduras paralelas
+  [[-0.4, 0.75, 2.4], [2.6, 0.6, 2.1]].forEach(([rot, lean, length], j) => {
+    const out = [Math.cos(rot), 0, Math.sin(rot)], across = [-Math.sin(rot), 0, Math.cos(rot)];
+    for (const u of lin(0, 1, 120)) {
+      const w = 0.36 * Math.pow(Math.sin(Math.PI * u), 0.75) * (1 - 0.25 * u);
+      const y = -1.95 + length * u;
+      const o = lean * Math.pow(u, 1.8) + 0.08;
+      for (const v of lin(-1, 1, 54)) {
+        const cup = 0.18 * w * v * v;
+        const p = add(add(mul(out, o + cup), mul(across, w * v)), [0, y - 0.15 * u * u * length * 0.2, 0]);
+        const vein = 0.55 * Math.sin(v * 9 * Math.PI);
+        const n = norm(add(sub(out, mul(across, 2 * 0.18 * w * v + vein)), [0, -lean * 0.6, 0]));
+        push(p, n, MAT_LEAF, 0.02 + 0.03 * j, 0, [0, -1.95, 0]);
+      }
+    }
+  });
+
+  // centrar en el eje de giro y empaquetar en arrays tipados
+  const n = P.length, lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+  for (const p of P) for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p[i]); hi[i] = Math.max(hi[i], p[i]); }
+  const off = [0, 1, 2].map(i => -(lo[i] + hi[i]) / 2);
+  const pk = arr => { const f = new Float32Array(n * 3); arr.forEach((p, i) => { f[3*i] = p[0]; f[3*i+1] = p[1]; f[3*i+2] = p[2]; }); return f; };
+  const Pf = pk(P), Af = pk(A);
+  for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) { Pf[3*i+c] += off[c]; Af[3*i+c] += off[c]; }
+  return { n, P: Pf, N: pk(N), A: Af, M: Uint8Array.from(M), G: Float32Array.from(G), D: Uint8Array.from(D) };
+}
+
+const plant = buildPlant();
+const NP = plant.n;
+// viento: velocidad, retardo, fase de turbulencia y qué puntos viajan como partícula
+const vel = new Float32Array(NP * 3), delay = new Float32Array(NP), seed = new Float32Array(NP * 3), keep = new Uint8Array(NP);
+for (let i = 0; i < NP; i++) {
+  vel[3*i] = randn() * 0.25 + 0.9 + 0.5 * rand();
+  vel[3*i+1] = randn() * 0.25 + 0.35;
+  vel[3*i+2] = randn() * 0.25;
+  delay[i] = rand() * 1.2 + (plant.D[i] === 2 ? 0 : 0.8 + 0.6 * rand());
+  seed[3*i] = rand() * 6.28; seed[3*i+1] = rand() * 6.28; seed[3*i+2] = rand() * 6.28;
+  keep[i] = rand() < 0.3 ? 1 : 0;
+}
+
+// ---------------------------------------------------------------- render
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const glowC = document.createElement("canvas"), gctx = glowC.getContext("2d");
+let W, H, dpr, cw, ch, cols, rows, focal, atlas, zbuf, cellLv, cellMat;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.floor(innerWidth * dpr); H = Math.floor(innerHeight * dpr);
+  canvas.width = W; canvas.height = H;
+  // tamaño de celda proporcional a la pantalla (como el original a 1280x900 con fuente de 8px)
+  const scale = Math.min(W / 1000, H / 900);
+  ch = Math.max(4 * dpr, Math.round(9 * Math.min(W / 1280, H / 900)));
+  const fontPx = Math.round(ch * 0.95);
+  ctx.font = `bold ${fontPx}px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace`;
+  cw = Math.max(3, Math.round(ctx.measureText("@").width));
+  cols = Math.floor(W / cw); rows = Math.floor(H / ch);
+  focal = (W > H ? 1050 * Math.min(W / 1280, H / 900) : 1050 * scale);
+  // atlas de glifos: fila = material, columna = nivel de brillo
+  atlas = document.createElement("canvas");
+  atlas.width = cw * LEVELS; atlas.height = ch * MAT_COLORS.length;
+  const a = atlas.getContext("2d");
+  a.font = ctx.font; a.textBaseline = "middle"; a.textAlign = "center";
+  MAT_COLORS.forEach((base, m) => {
+    for (let lv = 0; lv < LEVELS; lv++) {
+      const f = 0.45 + 0.55 * lv / (LEVELS - 1);
+      a.fillStyle = `rgb(${base.map(c => Math.min(255, c * f) | 0).join(",")})`;
+      a.fillText(RAMP[lv], lv * cw + cw / 2, m * ch + ch / 2);
+    }
+  });
+  zbuf = new Float32Array(cols * rows); cellLv = new Int8Array(cols * rows); cellMat = new Uint8Array(cols * rows);
+  glowC.width = Math.max(1, W >> 2); glowC.height = Math.max(1, H >> 2);
+}
+addEventListener("resize", resize);
+resize();
+
+const L = norm([-0.5, 0.7, -0.6]);
+const CAM = 6.0;
+
+function render(t, ct) {
+  zbuf.fill(1e9); cellLv.fill(-1);
+  const P = plant.P, Nn = plant.N, A = plant.A, M = plant.M, G = plant.G, D = plant.D;
+  const dot = ct < 1.0 || ct > 16.8;
+  // rotación: Rx(0.18) * Ry(ang)
+  const ay = 0.35 * t - 0.6, cy = Math.cos(ay), sy = Math.sin(ay), cx = Math.cos(0.18), sx = Math.sin(0.18);
+  const grow = (ct - 1.0) / 7.0;
+  const wither = smooth((ct - 13.6) / 2.6);
+  const sway = 0.06 * Math.sin(t * 1.3);
+  const n = dot ? 1 : NP;
+  for (let i = 0; i < n; i++) {
+    let px, py, pz, nx, ny, nz, alpha = 1, m, wx = 0, wy = 0, wz = 0;
+    if (dot) { px = py = pz = 0; nx = 0; ny = 0; nz = -1; m = MAT_BELL; }
+    else {
+      const g = smooth((grow - G[i]) / 0.12);
+      if (g <= 0.01) continue;
+      const k = Math.pow(g, 0.7), i3 = 3 * i;
+      const ax = A[i3], ay_ = A[i3+1], az = A[i3+2];
+      px = ax + (P[i3] - ax) * k; py = ay_ + (P[i3+1] - ay_) * k; pz = az + (P[i3+2] - az) * k;
+      nx = Nn[i3]; ny = Nn[i3+1]; nz = Nn[i3+2]; m = M[i];
+      const petal = D[i] === 2;
+      if (petal) {
+        const wt = ct - 12.5 - delay[i];
+        if (wt > 0) {
+          if (!keep[i]) continue;
+          alpha *= Math.max(0, 1 - wt / 2.6);
+          const q = Math.min(wt, 1) * 0.12;
+          wx = vel[i3] * wt + 0.55 * wt * wt + q * Math.sin(seed[i3] + wt * 4);
+          wy = vel[i3+1] * wt + 0.1375 * wt * wt + q * Math.sin(seed[i3+1] + wt * 4);
+          wz = vel[i3+2] * wt + q * Math.sin(seed[i3+2] + wt * 4);
+        }
+      } else if (wither > 0) {
+        px += (ax - px) * wither * 0.85; py += (ay_ - py) * wither * 0.85; pz += (az - pz) * wither * 0.85;
+        py -= wither * 0.4;
+        alpha *= 1 - wither;
+      }
+      const hgt = Math.max(0, py + 1.6);
+      px += sway * hgt * hgt * 0.25;
+    }
+    if (alpha <= 0) continue;
+    // rotar punto y normal
+    let x = cy * px + sy * pz, z1 = -sy * px + cy * pz;
+    let y = cx * py - sx * z1, z = sx * py + cx * z1;
+    let rnx = cy * nx + sy * nz, rz1 = -sy * nx + cy * nz;
+    let rny = cx * ny - sx * rz1, rnz = sx * ny + cx * rz1;
+    x += wx; y += wy; z += wz;
+    const zz = z + CAM;
+    if (zz < 0.5) continue;
+    const scx = Math.floor((W / 2 + focal * x / zz) / cw), scy = Math.floor((H / 2 - focal * y / zz) / ch);
+    if (scx < 0 || scx >= cols || scy < 0 || scy >= rows) continue;
+    const idx = scy * cols + scx;
+    if (zz >= zbuf[idx]) continue;
+    const lam = Math.abs(rnx * L[0] + rny * L[1] + rnz * L[2]);
+    const amb = AMBIENT[m];
+    const depth = Math.min(1.1, Math.max(0.65, 1.0 - (zz - CAM) * 0.10));
+    const b = (amb + (1 - amb) * Math.pow(lam, 0.8)) * alpha * depth;
+    zbuf[idx] = zz;
+    cellLv[idx] = Math.min(LEVELS - 1, Math.max(0, (b * (LEVELS - 1)) | 0));
+    cellMat[idx] = m;
+  }
+  ctx.fillStyle = "#040408";
+  ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < cellLv.length; i++) {
+    const lv = cellLv[i];
+    if (lv <= 0) continue;
+    ctx.drawImage(atlas, lv * cw, cellMat[i] * ch, cw, ch, (i % cols) * cw, ((i / cols) | 0) * ch, cw, ch);
+  }
+  // bloom barato: reducir, oscurecer y sumar
+  gctx.globalCompositeOperation = "copy";
+  gctx.drawImage(canvas, 0, 0, glowC.width, glowC.height);
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = 0.35;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(glowC, 0, 0, W, H);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- bucle
+let t = 0, paused = false, last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (!paused) t += dt;
+  render(t, t % CYCLE);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+const hint = document.getElementById("hint");
+if (matchMedia("(pointer: coarse)").matches) hint.textContent = "toca para pausar";
+setTimeout(() => hint.classList.add("off"), 4000);
+canvas.addEventListener("click", () => { paused = !paused; });
+addEventListener("keydown", e => {
+  if (e.code === "Space") { paused = !paused; e.preventDefault(); }
+  else if (e.key === "r" || e.key === "R") t = 0;
+  else if (e.key === "f" || e.key === "F") {
+    if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.();
+  }
+});
+</script>
+</body>
+</html>
